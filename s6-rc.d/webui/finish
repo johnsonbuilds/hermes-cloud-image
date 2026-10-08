@@ -1,0 +1,11 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# WebUI finish script. Companion to ./run (same contract as the dashboard
+# finish script): when HERMES_WEBUI_ENABLED is falsy, exit 125 so
+# s6-supervise parks the slot instead of restart-looping. When enabled,
+# exit non-125 so crashes are restarted under supervision.
+
+case "${HERMES_WEBUI_ENABLED:-1}" in
+    0|false|FALSE|False|no|NO|No) exit 125 ;;
+    *) exit 0 ;;
+esac

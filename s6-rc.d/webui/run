@@ -1,0 +1,30 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# WebUI service (hermes-cloud-image overlay, not upstream).
+# Supervised longrun slot next to the gateway main program: the gateway owns
+# the container lifecycle (PID-1 main program via main-wrapper.sh); this
+# service only serves the browser UI on 8787 over the same HERMES_HOME.
+#
+# Gating mirrors the dashboard service convention: HERMES_WEBUI_ENABLED=0
+# (or false/no) cleanly parks the slot via the companion finish script
+# (exit 125 = permanent failure, do not restart).
+
+case "${HERMES_WEBUI_ENABLED:-1}" in
+    0|false|FALSE|False|no|NO|No) exit 0 ;;
+esac
+
+# with-contenv repopulates HOME from /init as /root. Reset it before
+# dropping privileges so HOME-anchored state lands under /opt/data.
+export HOME=/opt/data
+
+# server.py reads HERMES_WEBUI_* exclusively from the environment;
+# defaults are baked in the image ENV, per-tenant overrides come from
+# the orchestrator (Coolify) env. See README.md.
+export HERMES_WEBUI_AGENT_DIR="${HERMES_WEBUI_AGENT_DIR:-/opt/hermes}"
+export HERMES_WEBUI_STATE_DIR="${HERMES_WEBUI_STATE_DIR:-/opt/data/webui}"
+
+cd /opt/webui
+
+# Skip the drop when already non-root (same idiom as the dashboard run).
+[ "$(id -u)" = 0 ] || exec /opt/hermes/.venv/bin/python server.py
+exec s6-setuidgid hermes /opt/hermes/.venv/bin/python server.py

@@ -1,0 +1,246 @@
+name: Docker Publish(Cloud Image)
+
+# Assembles hermes-cloud-image from the pinned agent + webui images.
+# No source is compiled here — upstream syncs never conflict in this repo.
+# To pick up releases: bump versions.env, push, verify the smoke check.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - v*
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-cloud-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.img.outputs.image }}
+      agent_image: ${{ steps.pins.outputs.agent_image }}
+      webui_image: ${{ steps.pins.outputs.webui_image }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Compute lowercase image name and read pins
+        id: img
+        run: |
+          image="${REGISTRY}/${GITHUB_REPOSITORY}"
+          image=$(echo "${image}" | tr '[:upper:]' '[:lower:]')
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+
+      - name: Read versions.env
+        id: pins
+        run: |
+          set -a; source versions.env; set +a
+          echo "agent_image=${AGENT_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "webui_image=${WEBUI_IMAGE}" >> "$GITHUB_OUTPUT"
+
+  build-amd64:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image (amd64, PR validation)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: false
+          build-args: |
+            AGENT_IMAGE=${{ needs.prepare.outputs.agent_image }}
+            WEBUI_IMAGE=${{ needs.prepare.outputs.webui_image }}
+
+      - name: Build and push amd64 by digest
+        id: build
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            AGENT_IMAGE=${{ needs.prepare.outputs.agent_image }}
+            WEBUI_IMAGE=${{ needs.prepare.outputs.webui_image }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-amd64
+          cache-to: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-amd64,mode=max
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-amd64
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  build-arm64:
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image (arm64, PR validation)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/arm64
+          push: false
+          build-args: |
+            AGENT_IMAGE=${{ needs.prepare.outputs.agent_image }}
+            WEBUI_IMAGE=${{ needs.prepare.outputs.webui_image }}
+
+      - name: Build and push arm64 by digest
+        id: build
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/arm64
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            AGENT_IMAGE=${{ needs.prepare.outputs.agent_image }}
+            WEBUI_IMAGE=${{ needs.prepare.outputs.webui_image }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-arm64
+          cache-to: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-arm64,mode=max
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-arm64
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [prepare, build-amd64, build-arm64]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+        run: |
+          set -euo pipefail
+          args=()
+          for digest_file in *; do
+            args+=("${IMAGE}@sha256:${digest_file}")
+          done
+
+          tag_args=(-t "${IMAGE}:latest")
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag_args+=(-t "${IMAGE}:${GITHUB_REF_NAME}")
+          elif [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            tag_args+=(-t "${IMAGE}:sha-${GITHUB_SHA}")
+          fi
+
+          docker buildx imagetools create "${tag_args[@]}" "${args[@]}"
+
+      - name: Smoke check (webui health + gateway probe)
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+        run: |
+          set -euo pipefail
+          cid=$(docker run -d -p 18787:8787 "${IMAGE}:latest")
+          trap 'docker rm -f "$cid" >/dev/null' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18787/health >/dev/null 2>&1; then
+              echo "webui /health OK"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "webui /health never became ready"
+          docker logs "$cid" | tail -n 50
+          exit 1
+
+      - name: Inspect image
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+        run: |
+          docker buildx imagetools inspect "${IMAGE}:latest"

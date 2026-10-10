@@ -17,8 +17,13 @@ FROM ${AGENT_IMAGE} AS runtime
 
 # WebUI source only. The WebUI's own venv/entrypoint (docker_init.bash) is
 # intentionally NOT used: server.py runs on the agent's sealed venv, which
-# already carries every heavy agent dependency. We add just the WebUI's own
-# two hard deps (requirements.txt: pyyaml + cryptography).
+# already carries every heavy agent dependency (and has no pip by design).
+# The WebUI's two hard deps (requirements.txt: pyyaml + cryptography) go to
+# an isolated vendor dir instead, so the sealed agent venv is never touched:
+# pm verifies that tree at boot and extra packages behind its back could
+# trip its consistency checks. The s6 run script puts /opt/webui/vendor on
+# PYTHONPATH. All other WebUI requirements.txt entries are optional with
+# graceful 503 degradations (edge-tts, office parsers, psutil).
 COPY --from=webui --chmod=a+rX,go-w /apptoo /opt/webui
 
 # s6-overlay service slot for the WebUI (mirrors the dashboard service:
@@ -29,7 +34,13 @@ COPY s6-rc.d/webui/type /etc/s6-overlay/s6-rc.d/webui/
 COPY s6-rc.d/webui/dependencies.d/base /etc/s6-overlay/s6-rc.d/webui/dependencies.d/
 RUN touch /etc/s6-overlay/s6-rc.d/user/contents.d/webui
 
-RUN /opt/hermes/.venv/bin/pip install --no-cache-dir "pyyaml>=6.0" "cryptography>=42.0"
+# uv is provisioned by the agent image's pm toolchain under a versioned
+# path; resolve it with a glob rather than pinning the version here.
+RUN UV_BIN=$(echo /opt/hermes/tools/uv-*/uv) && \
+    test -x "$UV_BIN" && \
+    "$UV_BIN" pip install --python /opt/hermes/.venv/bin/python \
+        --target /opt/webui/vendor --no-cache \
+        "pyyaml>=6.0" "cryptography>=42.0"
 
 # WebUI wiring. HERMES_HOME=/opt/data already comes from the agent base.
 # The gateway runs as the container main program (main-wrapper.sh default);

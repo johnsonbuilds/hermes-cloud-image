@@ -25,6 +25,11 @@ export HERMES_WEBUI_STATE_DIR="${HERMES_WEBUI_STATE_DIR:-/opt/data/webui}"
 
 cd /opt/webui
 
+# Vendor dir for the WebUI-only deps (pyyaml, cryptography) that the sealed
+# agent venv does not carry. Agent modules themselves resolve from
+# HERMES_WEBUI_AGENT_DIR via server.py's sys.path wiring.
+export PYTHONPATH="/opt/webui/vendor${PYTHONPATH:+:$PYTHONPATH}"
+
 # Skip the drop when already non-root (same idiom as the dashboard run).
 [ "$(id -u)" = 0 ] || exec /opt/hermes/.venv/bin/python server.py
 exec s6-setuidgid hermes /opt/hermes/.venv/bin/python server.py

@@ -43,6 +43,7 @@ Optional environment:
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `HERMES_UID` / `HERMES_GID` | `10000` | remap the in-container `hermes` user (usermod + targeted chown at boot). **Set both to `1000` on Coolify-managed volumes**: Coolify (re)deploy resets the app data dir to `1000:1000`, so the default `10000` loses write access on every redeploy and both gateway and WebUI crash-loop with `PermissionError` under `/opt/data`. With the remap set, redeploys converge instead of breaking. |
 | `HERMES_WEBUI_ENABLED` | `1` | set `0` to park the WebUI slot (gateway-only container) |
 | `HERMES_DASHBOARD` | unset (off) | agent-base flag; unchanged by this image |
 | `AGENT_GATEWAY_READY_NOTIFY_URL` | unset | agent-fork hook: gateway `GET`s this URL once ready (orchestrator callback) |
